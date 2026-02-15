@@ -9,11 +9,29 @@ description: Analyse video content by extracting frames with ffmpeg and using AI
 
 # FFmpeg Video Analysis
 
-Extract frames from video files with ffmpeg, view them with the Read tool, and produce a structured timestamped summary.
+Extract frames from video files with ffmpeg. Delegate frame reading to sub-agents to preserve the main context window. Synthesise a structured timestamped summary from text-only sub-agent reports.
+
+## Architecture: Context-Efficient Sub-Agent Pipeline
+
+**Problem**: Reading dozens of images into the main conversation context consumes most of the context window, leaving little room for synthesis and follow-up.
+
+**Solution**: A 3-phase pipeline:
+
+```
+Main Agent                          Sub-Agents (disposable context)
+──────────                          ──────────────────────────────
+1. ffprobe metadata        ───►
+2. ffmpeg frame extraction ───►
+3. Split frames into batches ──►   4. Read images (vision)
+                                      Write text descriptions
+                                      to batch_N_analysis.md
+5. Read text files only    ◄───    (context discarded)
+6. Synthesise final output
+```
+
+Images only ever exist inside sub-agent contexts. The main agent only reads lightweight text files. This cuts context usage by ~90%.
 
 ## 1. Prerequisites
-
-Run before anything else:
 
 ```bash
 which ffmpeg && which ffprobe
@@ -25,8 +43,6 @@ If either is missing, show platform-specific install instructions and STOP:
 - **Windows**: `choco install ffmpeg` or `winget install ffmpeg`
 
 ## 2. Setup Temp Directory
-
-Detect platform and create a working directory:
 
 ```bash
 # macOS/Linux
@@ -70,32 +86,108 @@ For thumbnail filter, calculate `SEGMENT_FRAMES = total_frames / 60` to cap outp
 **Time range analysis:** When user specifies a range, prepend `-ss START -to END` before `-i`.
 **Higher detail mode:** If requested, double the fps rate and lower scene threshold to 0.2.
 
-After extraction, list frames and calculate each frame's timestamp from its sequence number and the extraction rate.
+After extraction, list all frame files and calculate each frame's timestamp from its sequence number and the extraction rate.
 
-## 5. Analyse Frames
+## 5. Delegate Frame Analysis to Sub-Agents
 
-Process frames in batches of 5-8 using the Read tool to view each image.
+**This is the critical context-saving step.** Do NOT read frame images in the main conversation. Instead, split frames into batches and delegate each batch to a sub-agent.
 
-For each frame describe:
-- Scene content (what is visible)
-- Actions or state (what is happening)
-- Text or UI elements (any readable text, buttons, menus, code)
-- Transition from previous frame (what changed)
+### 5a. Prepare Batch Manifest
 
-After the first batch, classify the content type as one of:
-- **Screencast** — software demo, coding session → read text/UI elements carefully
-- **Presentation** — slides → capture slide titles and key bullet points
-- **Tutorial** — instructional with steps → identify each step
-- **Footage** — real-world video → describe scenes and actions
-- **Animation** — motion graphics → describe visual elements and transitions
+Split the extracted frame file list into batches of 8-10 frames each. For each batch, record:
+- Batch number (1, 2, 3, ...)
+- Frame file paths (absolute)
+- Frame timestamps (calculated from sequence number)
+- Output file path: `TMPDIR/batch_N_analysis.md`
 
-Adjust analysis depth for subsequent batches based on content type.
+### 5b. Spawn Sub-Agents
 
-If a frame fails to load, skip it and note the gap in the timeline.
+For each batch, spawn a sub-agent with the prompt below. **Launch all batches in parallel** where the tool supports it — they are fully independent.
+
+#### Sub-Agent Prompt Template
+
+Use this prompt verbatim, substituting the placeholders:
+
+```
+You are analysing frames extracted from a video file.
+
+VIDEO: {filename}
+DURATION: {duration}
+BATCH: {batch_number} of {total_batches}
+
+Read each frame image listed below using the Read tool (or equivalent file reading tool that supports images). For each frame, write a structured description.
+
+FRAMES:
+{for each frame in batch}
+- {absolute_path_to_frame} (timestamp: {MM:SS})
+{end for}
+
+For each frame, describe:
+1. SCENE: What is visible (layout, UI elements, environment)
+2. CONTENT: Text, code, labels, menus, or dialogue visible on screen
+3. ACTION: What is happening or has changed since the likely previous frame
+4. DETAILS: Any notable specifics (error messages, URLs, file names, button states)
+
+After describing all frames, add a BATCH SUMMARY section with:
+- Content type (one of: Screencast, Presentation, Tutorial, Footage, Animation)
+- Key events in this batch's time range
+- Any text/prompts/commands the user typed (quote exactly)
+
+Write the complete analysis to: {TMPDIR}/batch_{N}_analysis.md
+
+Format the output file as:
+
+# Batch {N} Analysis ({start_timestamp} - {end_timestamp})
+
+## Frame-by-Frame
+
+### Frame {sequence} ({timestamp})
+- **Scene**: ...
+- **Content**: ...
+- **Action**: ...
+- **Details**: ...
+
+(repeat for each frame)
+
+## Batch Summary
+- **Content Type**: ...
+- **Key Events**: ...
+- **Quoted Text/Prompts**: ...
+```
+
+#### Tool-Specific Sub-Agent Spawning
+
+| Tool | How to Spawn | Parallelism |
+|------|-------------|-------------|
+| **Claude Code** | `Task` tool with `subagent_type: "general-purpose"`. Set `run_in_background: true` for parallel execution. | Launch all batches in one message with multiple Task calls |
+| **Codex** | Use sub-task / agent delegation mechanism | Parallel by default |
+| **Cursor** | Use background agent or composer agent | Launch per batch |
+| **Gemini** | Use tool-call based sub-agent spawning | Parallel where supported |
+| **Aider** | Use `/run` or architect mode delegation | Sequential fallback |
+| **Generic** | Any mechanism that spawns an independent agent context with file read/write | Prefer parallel |
+
+**If no sub-agent mechanism is available** (e.g., simple chat interface), fall back to reading frames directly in the main context, but limit to 20 frames maximum and warn the user about context usage.
+
+### 5c. Collect Results
+
+After all sub-agents complete, read the text analysis files. These are lightweight markdown — no images enter the main context.
+
+```bash
+ls TMPDIR/batch_*_analysis.md
+```
+
+Read each `batch_N_analysis.md` file **in order**. These contain only text descriptions — the context cost is minimal compared to reading the original images.
 
 ## 6. Synthesise Output
 
-Group analysed frames into natural segments (same scene, slide, or screen). Identify 3-7 key moments. Write a 2-5 sentence narrative summary.
+Using only the text from the batch analysis files, perform synthesis in the main context:
+
+1. Merge all frame descriptions into a single chronological timeline
+2. Group frames into natural segments (same scene, slide, or screen)
+3. Detect the dominant content type across all batches
+4. Identify 3-7 key moments
+5. Extract all quoted text, prompts, or commands the user typed
+6. Write a 2-5 sentence narrative summary
 
 Format the output as:
 
@@ -145,8 +237,18 @@ Skip cleanup if the user asks to keep frames.
 
 - **Time range**: "Analyse 2:00 to 5:00 of video.mp4" → use `-ss 120 -to 300`
 - **Higher detail**: "Analyse in high detail" → double frame rate, lower scene threshold to 0.2
-- **Focus area**: "Focus on the code shown" → prioritise text/code extraction in analysis
+- **Focus area**: "Focus on the code shown" → prioritise text/code extraction in sub-agent prompts
 - **Sprite sheet**: For a visual overview, generate a contact sheet:
   ```bash
   ffmpeg -hide_banner -y -i INPUT -vf "select='not(mod(n,EVERY_N))',scale='min(320,iw)':-2,tile=5xROWS" -frames:v 1 DIR/sprite.jpg
   ```
+
+## Error Handling
+
+- ffmpeg not found → install instructions per platform, STOP
+- No video stream → report audio-only, STOP
+- Scene detection yields 0 frames → fallback to interval
+- Too many frames (>100) → subsample to 80
+- Large files (>2GB) → warn, suggest time range
+- Sub-agent fails or times out → read that batch's frames directly as fallback, warn about context usage
+- Frame read failure in sub-agent → skip frame, note gap in batch analysis file
