@@ -17,12 +17,6 @@ npx skills add fabriqaai/ffmpeg-analyse-video-skill
   - Ubuntu/Debian: `sudo apt install ffmpeg`
   - Windows: `choco install ffmpeg` or `winget install ffmpeg`
 
-## Supported AI Agents
-
-Works with any AI coding tool that can run shell commands and read image files. Uses sub-agents to keep images out of the main context — compatible with Claude Code, Codex, Cursor, Gemini CLI, Windsurf, and others.
-
-Falls back to direct frame reading (capped at 20 frames) if the tool has no sub-agent mechanism.
-
 ## Usage
 
 Provide a video file path and ask your agent to analyse it:
