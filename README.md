@@ -19,15 +19,15 @@ npx skills add fabriqaai/ffmpeg-analyse-video-skill
 
 ## Supported AI Agents
 
-| Agent | Sub-Agent Support | Parallel Batches |
-|-------|------------------|-----------------|
-| Claude Code | Task tool (`general-purpose`) | Yes |
-| Codex | Sub-task delegation | Yes |
-| Cursor | Background / composer agent | Yes |
-| Gemini | Tool-call sub-agents | Yes |
-| Aider | `/run` / architect mode | Sequential |
+| Agent | Sub-Agent Method | Parallel Batches |
+|-------|-----------------|-----------------|
+| Claude Code | Native `Task` tool (`general-purpose` sub-agent) | Yes — multiple Task calls in one message |
+| Gemini CLI | Experimental delegate-to-agent tool (`.gemini/agents/`) | Sequential only (parallel not yet implemented) |
+| Codex | Scripted — shell script runs `codex --message` per batch | Manual parallelism via `&` / `xargs -P` |
+| Cursor | MCP server wrapping Background Agent API, or manual launch from UI | Parallel via API (requires Pro+) |
+| Aider | Scripted — shell script runs `aider --message` per batch | Manual parallelism via `&` / `xargs -P` |
 
-Falls back to direct frame reading (capped at 20 frames) if no sub-agent mechanism is available.
+Falls back to direct frame reading (capped at 20 frames) if no sub-agent or scripting mechanism is practical.
 
 ## Usage
 

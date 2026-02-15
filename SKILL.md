@@ -157,16 +157,26 @@ Format the output file as:
 
 #### Tool-Specific Sub-Agent Spawning
 
-| Tool | How to Spawn | Parallelism |
-|------|-------------|-------------|
-| **Claude Code** | `Task` tool with `subagent_type: "general-purpose"`. Set `run_in_background: true` for parallel execution. | Launch all batches in one message with multiple Task calls |
-| **Codex** | Use sub-task / agent delegation mechanism | Parallel by default |
-| **Cursor** | Use background agent or composer agent | Launch per batch |
-| **Gemini** | Use tool-call based sub-agent spawning | Parallel where supported |
-| **Aider** | Use `/run` or architect mode delegation | Sequential fallback |
-| **Generic** | Any mechanism that spawns an independent agent context with file read/write | Prefer parallel |
+| Tool | How to Spawn | Parallelism | Notes |
+|------|-------------|-------------|-------|
+| **Claude Code** | `Task` tool with `subagent_type: "general-purpose"`. Set `run_in_background: true` for parallel. | Launch all batches in one message with multiple Task calls | MCP tools unavailable in background sub-agents |
+| **Gemini CLI** | Define a `frame-analyser` agent in `.gemini/agents/frame-analyser.md`. Enable with `"experimental": {"enableAgents": true}` in settings.json. Main agent invokes it via the delegate-to-agent tool. | Sequential only (parallel is not yet implemented) | Experimental feature; sub-agents run in YOLO mode (no per-step confirmation) |
+| **Codex** | No user-controllable sub-agent spawning. Use scripted approach: write a shell script that runs `codex --message "PROMPT" --yes` per batch, execute via terminal. | Manual parallelism with `&` or `xargs -P` | Internal model-initiated sub-agents exist (~v0.93+) but cannot be directed by the user |
+| **Cursor** | No native in-session sub-agent spawning. Options: (a) Use [cursor-background-agent-mcp](https://github.com/samuelbalogh/cursor-background-agent-mcp) to expose `launchAgent` as an MCP tool, or (b) manually launch parallel background agents from the Cursor UI/API for each batch. | Parallel via Background Agent API (`POST api.cursor.com/v0/agents`) | Requires Cursor Pro+; each agent works on its own branch |
+| **Aider** | No sub-agent system. Use scripted approach: write a shell script that runs `aider --message "PROMPT" --yes FRAME_FILES` per batch, execute via terminal. | Manual parallelism with `&` or `xargs -P` | `/run` is a shell executor, not agent delegation; architect mode is a 2-LLM pipeline, not task delegation |
+| **Generic** | Any mechanism that spawns an independent agent context with file read/write capability | Prefer parallel where supported | See fallback below |
 
-**If no sub-agent mechanism is available** (e.g., simple chat interface), fall back to reading frames directly in the main context, but limit to 20 frames maximum and warn the user about context usage.
+**Fallback for tools without sub-agents**: If the tool has no sub-agent mechanism and scripted delegation is impractical, read frames directly in the main context but limit to **20 frames maximum**. Warn the user: "Reading frames directly — this will consume significant context. Consider using a tool with sub-agent support for longer videos."
+
+**Scripted delegation pattern** (Codex, Aider, or any CLI tool):
+```bash
+# Generate per-batch prompt files, then run in parallel
+for batch_file in TMPDIR/batch_*_prompt.txt; do
+  TOOL_CMD --message "$(cat $batch_file)" --yes &
+done
+wait
+```
+This runs each batch in a separate process with its own context. Write the prompt for each batch to `TMPDIR/batch_N_prompt.txt` first, then execute.
 
 ### 5c. Collect Results
 
